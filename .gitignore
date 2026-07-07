@@ -1,0 +1,17 @@
+# 빌드 산출물
+/build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+
+# Claude / OMC 도구 상태
+/.claude/
+/.omc/
+
+# 에디터
+.vscode/
+*.swp
