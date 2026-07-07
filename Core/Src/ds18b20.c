@@ -96,24 +96,28 @@ void DS18B20_Init(void) {
     dwt_init();
 }
 
-/* Public: read temperature from DS18B20 */
+/* Public: read temperature from DS18B20.
+ * 비트백 구간을 크리티컬 섹션으로 묶어 고속 태스크(vVibTask 1kHz)의 선입으로부터
+ * 1-Wire μs 타이밍 보호. (750ms 변환 대기는 크리티컬 밖에서 yield) */
 uint8_t DS18B20_ReadTemp(float *temp) {
-    if (!ow_reset()) return 0;
+    uint8_t ok;
+    taskENTER_CRITICAL();
+    ok = ow_reset();
+    if (ok) { ow_write_byte(0xCC); ow_write_byte(0x44); }   /* Skip ROM, Convert T */
+    taskEXIT_CRITICAL();
+    if (!ok) return 0;
 
-    ow_write_byte(0xCC);  /* Skip ROM */
-    ow_write_byte(0x44);  /* Convert T */
-    vTaskDelay(pdMS_TO_TICKS(750));  /* Wait for conversion */
+    vTaskDelay(pdMS_TO_TICKS(750));  /* 변환 대기 (yield) */
 
-    if (!ow_reset()) return 0;
-
-    ow_write_byte(0xCC);  /* Skip ROM */
-    ow_write_byte(0xBE);  /* Read scratchpad */
-
-    uint8_t lsb = ow_read_byte();
-    uint8_t msb = ow_read_byte();
-    int16_t raw = (int16_t)((msb << 8) | lsb);
-
-    /* 12-bit default: 1 LSB = 0.0625 degC */
-    *temp = (float)raw * 0.0625f;
-    return 1;
+    taskENTER_CRITICAL();
+    ok = ow_reset();
+    if (ok) {
+        ow_write_byte(0xCC); ow_write_byte(0xBE);           /* Skip ROM, Read Scratchpad */
+        uint8_t lsb = ow_read_byte();
+        uint8_t msb = ow_read_byte();
+        int16_t raw = (int16_t)((msb << 8) | lsb);
+        *temp = (float)raw * 0.0625f;                       /* 12-bit: 0.0625°C/LSB */
+    }
+    taskEXIT_CRITICAL();
+    return ok;
 }

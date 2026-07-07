@@ -6,8 +6,8 @@ HAL_StatusTypeDef ADXL345_Init(I2C_HandleTypeDef *hi2c) {
     data = 0x0B;
     HAL_I2C_Mem_Write(hi2c, ADXL345_ADDR, ADXL345_REG_DATA_FORMAT,
                        I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
-    /* BW_RATE: 100Hz (0x0A) */
-    data = 0x0A;
+    /* BW_RATE: 3200Hz 출력 (0x0F) — 1kHz 샘플링이 센서 내부 레이트에 안 막히게 */
+    data = 0x0F;
     HAL_I2C_Mem_Write(hi2c, ADXL345_ADDR, ADXL345_REG_BW_RATE,
                        I2C_MEMADD_SIZE_8BIT, &data, 1, 100);
     /* POWER_CTL: measure mode (bit 3 = 1) */

@@ -110,6 +110,25 @@ Makefile, STM32G431RBTX_FLASH.ld, startup_stm32g431xx.s
 
 ## 로드맵
 - [x] Phase 1: 3센서 데이터 수집
-- [ ] Phase 2a: ADXL345 1kHz 샘플링 → FFT → 진동 특징(RMS/kurtosis/대역에너지)
+- [x] Phase 2a: ADXL345 ~1kHz 샘플링 → 256-pt FFT → 진동 특징(RMS/kurtosis/대역에너지)
 - [ ] Phase 2b: 이상탐지 임계 + 알림
 - [ ] Phase 3: STM32 ↔ RPi3 프레임 프로토콜 → 클라우드 대시보드
+
+## Phase 2a — 진동 분석 파이프라인
+
+ADXL345 z축을 ~1kHz로 256샘플 채취 → Hann 창 → 자체 radix-2 FFT → 진단 특징 추출.
+
+```
+[VIB] rms=27 peak=110 p2p=190 kurt=1.5 crest=3.8 | f0=320.3Hz | lo=.. mid=.. hi=..
+[BG] T1=28.38C
+```
+
+특징:
+- **시간영역**: RMS(진동 심도), peak, peak-to-peak, kurtosis(초과 첨도 — Gaussian≈0, 충격성↑), crest factor
+- **주파수영역**: 지배 주파수(f0), 대역 에너지(low 0-50Hz / mid 50-200Hz / high 200-500Hz)
+
+설계 메모:
+- 샘플링은 `vTaskDelayUntil(1ms)` 페이싱(RTOS 틱 평균 1kHz). TIM6 ISR 기반 정밀 샘플링은 이 보드에서 폴트/플러드 이슈가 있어 TODO.
+- I2C1은 100kHz(MPU6050+ADXL345 공유). **부팅 시 I2C 버스 리커버리**(SCL 9클럭+STOP)로 슬레이브 락업 자동 복구.
+- DS18B20 1-Wire 비트백은 **크리티컬 섹션**으로 묶어 고속 샘플링 태스크의 선점으로부터 μs 타이밍 보호.
+- DSP는 자체 구현(`Core/Src/dsp.c`, 의존성 无). 클럭 HSI 16MHz, 빌드 `-O2`.
