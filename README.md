@@ -111,8 +111,28 @@ Makefile, STM32G431RBTX_FLASH.ld, startup_stm32g431xx.s
 ## 로드맵
 - [x] Phase 1: 3센서 데이터 수집
 - [x] Phase 2a: ADXL345 ~1kHz 샘플링 → 256-pt FFT → 진동 특징(RMS/kurtosis/대역에너지)
-- [ ] Phase 2b: 이상탐지 임계 + 알림
+- [x] Phase 2b: 이상탐지 — 베이스라인 학습 → 임계 초과 시 ANOMALY/ALERT
 - [ ] Phase 3: STM32 ↔ RPi3 프레임 프로토콜 → 클라우드 대시보드
+
+## Phase 2b — 이상탐지 (anomaly detection)
+
+정상 진동의 베이스라인을 학습한 뒤, 임계를 넘는 윈도우를 **이상(ANOMALY)**으로 판정.
+
+```
+[CALIB] 12/20  rms=27 kurt=1.5  (keep still)     ← 부팅 후 ~5초, 20윈도우 학습
+[VIB] rms=30 kurt=1.6 f0=293 | NORMAL            ← 모니터링 (정상)
+[VIB] rms=82 kurt=9.4 f0=120 | **ANOMALY** rms 82>38
+[ALERT] *** ANOMALY *** rms=82(thr 38) kurt=9.4(thr 5.0)
+```
+
+동작:
+- **학습**: 부팅 후 20개 윈도우(약 5초) 동안 RMS·kurtosis의 mean+std 계산. **이때 보드를 정지 상태로 둘 것.**
+- **임계**: `mean + 3σ` (RMS는 최소 +30%, kurtosis는 최소 +1.5 마진 clamp — 너무 타이트해지는 것 방지).
+- **판정**: 매 윈도우마다 `rms > 임계` OR `kurtosis > 임계` → `**ANOMALY**`. rising edge에 `[ALERT]` 출력.
+- **재학습**: 직렬로 `r` 또는 `c` 전송 시(`echo r > /dev/ttyACM0`) 베이스라인 재수집. 또는 보드 리셋.
+- **LED**: 정상 = 토글, 이상 = 켜짐 유지(경고).
+
+이상탐지 로직은 `Core/Src/anomaly.c` (vVibTask가 매 윈도우 호출).
 
 ## Phase 2a — 진동 분석 파이프라인
 

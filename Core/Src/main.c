@@ -14,6 +14,7 @@
 #include "adxl345.h"
 #include "ds18b20.h"
 #include "dsp.h"
+#include "anomaly.h"
 #include <stdio.h>
 
 I2C_HandleTypeDef hi2c1;
@@ -31,13 +32,17 @@ static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM6_Init(void);
 
-/* ADXL345 z축 ~1kHz 샘플링(256샘플) → FFT → 특징 → 시리얼 출력 (~1Hz)
- * TIM6 ISR 경로는 이 보드에서 폴트/플러드 → vTaskDelayUntil 페이싱 사용(정밀화 TODO). */
+/* ADXL345 z축 ~1kHz 샘플링(256샘플) → FFT → 특징 → 이상탐지 → 시리얼 출력 (~1Hz)
+ * TIM6 ISR 경로는 이 보드에서 폴트/플러드 → vTaskDelayUntil 페이싱 사용(정밀화 TODO).
+ * Phase 2b: 부팅 후 20윈도우 베이스라인 학습 → 이후 매 윈도우 임계 초과 시 ANOMALY. */
 static void vVibTask(void *pv) {
     (void)pv;
     static float samples[DSP_N];        /* 1KB (.bss) — 스택 아님 */
     dsp_features_t f;
+    char reason[24];
+    anom_state_t prev = ANOM_CALIB;
     TickType_t last = xTaskGetTickCount();
+    anomaly_reset();
     for (;;) {
         for (int i = 0; i < DSP_N; i++) {
             vTaskDelayUntil(&last, pdMS_TO_TICKS(1));   /* 평균 1ms 주기 (RTOS 틱) */
@@ -45,12 +50,31 @@ static void vVibTask(void *pv) {
             ADXL345_ReadAccel(&hi2c1, &x, &y, &z);
             samples[i] = z * 1000.0f;   /* mg 단위 저장 */
         }
+        /* UART 'r'/'c' 입력 → 베이스라인 재학습 (echo r > /dev/ttyACM0) */
+        if (USART2->ISR & USART_ISR_RXNE) {
+            char c = (char)USART2->RDR;
+            while (USART2->ISR & USART_ISR_RXNE) (void)USART2->RDR;
+            if (c == 'r' || c == 'c') { anomaly_reset(); Debug_Print("[CALIB] re-calibrating...\r\n"); prev = ANOM_CALIB; }
+        }
         dsp_extract(samples, DSP_N, 1000.0f, &f);
-        Debug_Print("[VIB] rms=%.0f peak=%.0f p2p=%.0f kurt=%.2f crest=%.2f | f0=%.1fHz | lo=%.0f mid=%.0f hi=%.0f\r\n",
-            (double)f.rms, (double)f.peak, (double)f.peak2peak,
-            (double)f.kurtosis, (double)f.crest, (double)f.f0,
-            (double)f.band_low, (double)f.band_mid, (double)f.band_high);
-        LED_TOGGLE();
+        anom_state_t st = anomaly_eval(&f, reason, sizeof reason);
+        if (st == ANOM_CALIB) {
+            Debug_Print("[CALIB] %d/%d  rms=%.0f kurt=%.2f  (keep still)\r\n",
+                anomaly_count(), ANOM_BASELINE_N, (double)f.rms, (double)f.kurtosis);
+        } else {
+            const char *tag = (st == ANOM_NORMAL) ? "NORMAL" : "**ANOMALY**";
+            Debug_Print("[VIB] rms=%.0f peak=%.0f kurt=%.2f crest=%.2f f0=%.1f | %s%s%s\r\n",
+                (double)f.rms, (double)f.peak, (double)f.kurtosis, (double)f.crest, (double)f.f0,
+                tag, reason[0] ? " " : "", reason);
+            if (st == ANOM_ALERT && prev != ANOM_ALERT) {   /* rising edge → 명시적 알림 */
+                float tr, tk; anomaly_thresholds(&tr, &tk);
+                Debug_Print("[ALERT] *** ANOMALY *** rms=%.0f(thr %.0f) kurt=%.2f(thr %.2f)\r\n",
+                    (double)f.rms, (double)tr, (double)f.kurtosis, (double)tk);
+            }
+        }
+        if (st == ANOM_ALERT) LED_ON();   /* 이상: LED 켜짐 유지(경고) / 정상: 토글 */
+        else LED_TOGGLE();
+        prev = st;
     }
 }
 
