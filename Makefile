@@ -20,6 +20,7 @@ C_SOURCES = \
 Core/Src/main.c \
 Core/Src/dsp.c \
 Core/Src/anomaly.c \
+Core/Src/frame_protocol.c \
 Core/Src/mpu6050.c \
 Core/Src/adxl345.c \
 Core/Src/ds18b20.c \

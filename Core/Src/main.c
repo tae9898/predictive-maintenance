@@ -15,6 +15,7 @@
 #include "ds18b20.h"
 #include "dsp.h"
 #include "anomaly.h"
+#include "frame_protocol.h"
 #include <stdio.h>
 
 I2C_HandleTypeDef hi2c1;
@@ -74,6 +75,34 @@ static void vVibTask(void *pv) {
         }
         if (st == ANOM_ALERT) LED_ON();   /* 이상: LED 켜짐 유지(경고) / 정상: 토글 */
         else LED_TOGGLE();
+
+        /* Project 4 Phase 0: 프레임 전송 (RPi3 수신측용, 이진) — 매 윈도우 FEATURE_VECTOR */
+        if (st != ANOM_CALIB) {
+            frame_feature_t fp = {
+                .ts_ms = HAL_GetTick(),
+                .rms = (int16_t)f.rms, .peak = (int16_t)f.peak, .peak2peak = (int16_t)f.peak2peak,
+                .kurtosis_x100 = (int16_t)(f.kurtosis * 100.0f),
+                .crest_x100 = (uint16_t)(f.crest * 100.0f),
+                .f0_x10 = (uint16_t)(f.f0 * 10.0f),
+                .band_low = (uint32_t)f.band_low, .band_mid = (uint32_t)f.band_mid, .band_high = (uint32_t)f.band_high,
+                .anomaly = (st == ANOM_ALERT) ? 1u : 0u,
+            };
+            uint8_t fb[FRAME_HDR_LEN + sizeof(frame_feature_t) + FRAME_CRC_LEN];
+            size_t fn = frame_encode(fb, sizeof fb, FT_FEATURE_VECTOR, &fp, sizeof fp);
+            if (fn) HAL_UART_Transmit(&huart2, fb, fn, 50);
+            if (st == ANOM_ALERT && prev != ANOM_ALERT) {   /* rising edge: ANOMALY_ALERT */
+                float tr, tk; anomaly_thresholds(&tr, &tk);
+                frame_anomaly_t ap = {
+                    .ts_ms = HAL_GetTick(),
+                    .rms = (int16_t)f.rms, .kurtosis_x100 = (int16_t)(f.kurtosis * 100.0f),
+                    .thr_rms = (int16_t)tr, .thr_kurt_x100 = (int16_t)(tk * 100.0f),
+                    .reason = (f.rms > tr) ? 0u : 1u,
+                };
+                uint8_t ab[FRAME_HDR_LEN + sizeof(frame_anomaly_t) + FRAME_CRC_LEN];
+                size_t an = frame_encode(ab, sizeof ab, FT_ANOMALY_ALERT, &ap, sizeof ap);
+                if (an) HAL_UART_Transmit(&huart2, ab, an, 50);
+            }
+        }
         prev = st;
     }
 }
