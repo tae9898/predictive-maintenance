@@ -21,6 +21,7 @@ typedef enum {
     FT_FFT_RESULT     = 0x02,
     FT_FEATURE_VECTOR = 0x03,   /* 진동 특징 (매 윈도우) */
     FT_ANOMALY_ALERT  = 0x04,   /* 이상 발생 (rising edge) */
+    FT_TEMPERATURE    = 0x05,   /* DS18B20 온도 */
 } frame_type_t;
 
 #pragma pack(push, 1)
@@ -48,6 +49,12 @@ typedef struct {
     int16_t  thr_kurt_x100;
     uint8_t  reason;         /* 0=rms 초과, 1=kurtosis 초과 */
 } frame_anomaly_t;           /* sizeof = 13 */
+
+/* FT_TEMPERATURE payload — DS18B20 온도 */
+typedef struct {
+    uint32_t ts_ms;
+    int16_t  temp_x100;         /* 온도 °C ×100 (예: 28.38°C → 2838) */
+} frame_temperature_t;         /* sizeof = 6 */
 #pragma pack(pop)
 
 /* CRC16-CCITT (0x1021, init 0xFFFF) */

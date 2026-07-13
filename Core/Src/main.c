@@ -113,6 +113,12 @@ static void vBgTask(void *pv) {
     float temp = 0.0f;
     for (;;) {
         uint8_t ok = DS18B20_ReadTemp(&temp);   /* 변환 750ms 포함 */
+        if (ok) {
+            frame_temperature_t tp = { .ts_ms = HAL_GetTick(), .temp_x100 = (int16_t)(temp * 100.0f) };
+            uint8_t tb[FRAME_HDR_LEN + sizeof(frame_temperature_t) + FRAME_CRC_LEN];
+            size_t tn = frame_encode(tb, sizeof tb, FT_TEMPERATURE, &tp, sizeof tp);
+            if (tn) HAL_UART_Transmit(&huart2, tb, tn, 50);
+        }
         Debug_Print("[BG] T%d=%.2fC\r\n", (int)ok, (double)temp);
         vTaskDelay(pdMS_TO_TICKS(4000));        /* ~5s 주기 */
     }
