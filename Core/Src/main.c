@@ -23,6 +23,9 @@ I2C_HandleTypeDef hi2c2;
 UART_HandleTypeDef huart2;
 TIM_HandleTypeDef htim6;
 
+/* TIM6 1kHz ISR 지터 측정 (DWT cycle counter, 16000 cycles = 1ms @16MHz) */
+volatile uint32_t g_jit_min = UINT32_MAX, g_jit_max = 0, g_jit_prev = 0;
+
 extern DMA_HandleTypeDef hdma_usart2_tx;
 
 static TaskHandle_t xVibTaskHandle = NULL;
@@ -33,8 +36,9 @@ static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM6_Init(void);
 
-/* ADXL345 z축 ~1kHz 샘플링(256샘플) → FFT → 특징 → 이상탐지 → 시리얼 출력 (~1Hz)
- * TIM6 ISR 경로는 이 보드에서 폴트/플러드 → vTaskDelayUntil 페이싱 사용(정밀화 TODO).
+/* ADXL345 z축 1kHz 샘플링(256샘플) → FFT → 특징 → 이상탐지 → 시리얼 출력 (~1Hz)
+ * 샘플링: RTOS 틱 페이싱(vTaskDelayUntil 1ms). TIM6 1kHz ISR 시도 → I2C 읽기(~0.8ms)와
+ * 충돌로 안정화 실패 → 틱 페이싱으로 운영. 지터는 DWT로 실측(min 836us, worst 24.5ms). (스토리 S9)
  * Phase 2b: 부팅 후 20윈도우 베이스라인 학습 → 이후 매 윈도우 임계 초과 시 ANOMALY. */
 static void vVibTask(void *pv) {
     (void)pv;
@@ -44,12 +48,29 @@ static void vVibTask(void *pv) {
     anom_state_t prev = ANOM_CALIB;
     TickType_t last = xTaskGetTickCount();
     anomaly_reset();
+    /* TIM6 1kHz ISR은 이 보드에서 안정화 실패(I2C 읽기 ~0.8ms가 1ms 주기를 못 따라가 충돌).
+     * → RTOS 틱 페이싱으로 운영, 지터는 실측으로 한계 명시 (스토리 S9). */
     for (;;) {
         for (int i = 0; i < DSP_N; i++) {
-            vTaskDelayUntil(&last, pdMS_TO_TICKS(1));   /* 평균 1ms 주기 (RTOS 틱) */
+            vTaskDelayUntil(&last, pdMS_TO_TICKS(1));   /* 평균 1ms (RTOS 틱) */
+            uint32_t now = DWT->CYCCNT;                 /* 샘플 간격 → 지터 실측 */
+            if (g_jit_prev) {
+                uint32_t dt = now - g_jit_prev;
+                if (dt < g_jit_min) g_jit_min = dt;
+                if (dt > g_jit_max) g_jit_max = dt;
+            }
+            g_jit_prev = now;
             float x, y, z;
             ADXL345_ReadAccel(&hi2c1, &x, &y, &z);
             samples[i] = z * 1000.0f;   /* mg 단위 저장 */
+        }
+        /* 지터 통계 출력 (RTOS 틱 페이싱 실측) — 16000 cyc = 1ms @16MHz */
+        {
+            uint32_t jmin = g_jit_min, jmax = g_jit_max;
+            g_jit_min = UINT32_MAX; g_jit_max = 0;
+            Debug_Print("[JIT] %lu..%lu cyc → %lu..%lu us (RTOS 틱 페이싱, 16000=1ms)\r\n",
+                (unsigned long)jmin, (unsigned long)jmax,
+                (unsigned long)jmin/16, (unsigned long)jmax/16);
         }
         /* UART 'r'/'c' 입력 → 베이스라인 재학습 (echo r > /dev/ttyACM0) */
         if (USART2->ISR & USART_ISR_RXNE) {
@@ -139,9 +160,12 @@ static void i2c_scan(I2C_HandleTypeDef *hi2c, const char *name) {
 int main(void) {
     HAL_Init();
     SystemClock_Config();
+    /* DWT cycle counter 활성화 (TIM6 ISR 지터 측정용) */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     MX_GPIO_Init();
     MX_USART2_UART_Init();
-    MX_TIM6_Init();
+    MX_TIM6_Init();   /* TIM6 설정만(Start_IT 미사용) — ISR 경로는 안정화 실패, vTaskDelayUntil 페이싱 사용 */
 
     HAL_Delay(2000);
     Debug_Print("[B] Vibration pipeline (Phase 2a)\r\n");
@@ -257,6 +281,9 @@ static void MX_TIM6_Init(void) {
     htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
     HAL_TIM_Base_Init(&htim6);            /* MspInit에서 NVIC 우선순위 5 설정 (≤ configMAX_SYSCALL=5) */
 }
+
+/* TIM6 ISR 경로는 이 보드에서 I2C 읽기(0.8ms)와 충돌로 미사용 → vTaskDelayUntil 페이싱.
+ *  (HAL_TIM_PeriodElapsedCallback 도입 시도 → 안정화 실패. 상세는 스토리 S9 / docs/interview-stories.md) */
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
     (void)xTask; (void)pcTaskName; while(1);
